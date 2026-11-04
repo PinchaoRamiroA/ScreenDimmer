@@ -24,6 +24,17 @@ Write-Host "`n[2/3] Compilando solución en modo Release..." -ForegroundColor Ye
 & $dotnetExe build -c Release --no-restore
 
 Write-Host "`n[3/3] Publicando ejecutable optimizado (win-x64)..." -ForegroundColor Yellow
+
+if (Test-Path "publish\ScreenDimmer.exe") {
+    try {
+        $f = [System.IO.File]::Open("publish\ScreenDimmer.exe", [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $f.Dispose()
+    } catch {
+        $bak = "publish\ScreenDimmer_old_" + (Get-Random) + ".bak"
+        Move-Item "publish\ScreenDimmer.exe" $bak -Force -ErrorAction SilentlyContinue
+    }
+}
+
 & $dotnetExe publish -c Release -r win-x64 -p:PublishSingleFile=true --self-contained false -o publish\
 
 Write-Host "`n==========================================" -ForegroundColor Green

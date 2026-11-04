@@ -31,6 +31,7 @@ namespace ScreenDimmer.Interop
 
         public const uint SWP_NOSIZE = 0x0001;
         public const uint SWP_NOMOVE = 0x0002;
+        public const uint SWP_NOZORDER = 0x0004;
         public const uint SWP_NOACTIVATE = 0x0010;
         public const uint SWP_SHOWWINDOW = 0x0040;
         public const uint SWP_HIDEWINDOW = 0x0080;
@@ -40,6 +41,8 @@ namespace ScreenDimmer.Interop
         public const int SW_HIDE = 0;
         public const int SW_SHOW = 5;
         public const int SW_SHOWNOACTIVATE = 4;
+
+        public const int BLACK_BRUSH = 4;
 
         #endregion
 
@@ -78,6 +81,42 @@ namespace ScreenDimmer.Interop
 
         [DllImport("user32.dll", SetLastError = true)]
         public static extern int ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PAINTSTRUCT
+        {
+            public IntPtr hdc;
+            public bool fErase;
+            public RECT rcPaint;
+            public bool fRestore;
+            public bool fIncUpdate;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+            public byte[] rgbReserved;
+        }
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr BeginPaint(IntPtr hWnd, out PAINTSTRUCT lpPaint);
+
+        [DllImport("user32.dll")]
+        public static extern bool EndPaint(IntPtr hWnd, ref PAINTSTRUCT lpPaint);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr GetStockObject(int fnObject);
+
+        [DllImport("user32.dll")]
+        public static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
 
         [DllImport("user32.dll", EntryPoint = "GetWindowLong")]
         private static extern IntPtr GetWindowLong32(IntPtr hWnd, int nIndex);
