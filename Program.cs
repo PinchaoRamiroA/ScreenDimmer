@@ -40,14 +40,18 @@ namespace ScreenDimmer
 
             // 4. Componentes principales del sistema
             ScreenOverlay? overlay = null;
+            GammaController? gammaController = null;
             try
             {
                 overlay = new ScreenOverlay();
+                gammaController = new GammaController();
 
                 var controller = new BrightnessController(
                     overlay,
+                    gammaController,
                     settings.DimmingPercentage,
-                    settings.IsEnabled
+                    settings.IsEnabled,
+                    settings.Engine
                 );
 
                 var profileManager = new ProfileManager(
@@ -84,12 +88,12 @@ namespace ScreenDimmer
                 // Restaura inmediatamente la pantalla original para evitar que el usuario quede a oscuras.
                 Application.ThreadException += (s, e) =>
                 {
-                    try { overlay?.Dispose(); } catch { }
+                    try { overlay?.Dispose(); gammaController?.Restore(); } catch { }
                 };
 
                 AppDomain.CurrentDomain.UnhandledException += (s, e) =>
                 {
-                    try { overlay?.Dispose(); } catch { }
+                    try { overlay?.Dispose(); gammaController?.Restore(); } catch { }
                 };
 
                 // Crear formulario principal
@@ -101,6 +105,8 @@ namespace ScreenDimmer
                     startupService,
                     settings
                 );
+
+                overlay.MainFormHandle = mainForm.Handle;
 
                 // Servicio de System Tray
                 using var trayService = new SystemTrayService(controller, profileManager, startupService);
@@ -137,6 +143,7 @@ namespace ScreenDimmer
             {
                 // Garantizar la liberación total de recursos y restauración del estado visual
                 overlay?.Dispose();
+                gammaController?.Dispose();
             }
         }
     }

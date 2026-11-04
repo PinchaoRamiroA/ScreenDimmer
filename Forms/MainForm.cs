@@ -302,7 +302,7 @@ namespace ScreenDimmer.Forms
             Panel cardSettings = new Panel
             {
                 Location = new Point(20, 372),
-                Size = new Size(420, 185),
+                Size = new Size(420, 225),
                 BackColor = CardBg,
                 Padding = new Padding(14)
             };
@@ -312,10 +312,38 @@ namespace ScreenDimmer.Forms
                 e.Graphics.DrawRectangle(pen, 0, 0, cardSettings.Width - 1, cardSettings.Height - 1);
             };
 
+            Button btnToggleEngine = new Button
+            {
+                Text = _controller.Engine == DimmingEngine.Hardware
+                    ? "⚡ Modo: Hardware GPU (Inmune a scroll y vídeos)"
+                    : "🪟 Modo: Capa Overlay (Ventana semitransparente)",
+                Location = new Point(14, 12),
+                Size = new Size(392, 32),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = _controller.Engine == DimmingEngine.Hardware ? Color.FromArgb(12, 74, 110) : CardBorder,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 8.8F, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            btnToggleEngine.FlatAppearance.BorderSize = 1;
+            btnToggleEngine.FlatAppearance.BorderColor = AccentBlue;
+            btnToggleEngine.Click += (s, e) =>
+            {
+                var newEngine = _controller.Engine == DimmingEngine.Hardware ? DimmingEngine.Overlay : DimmingEngine.Hardware;
+                _controller.SetEngine(newEngine);
+                _settings.Engine = newEngine;
+                _settingsService.Save(_settings);
+
+                btnToggleEngine.Text = newEngine == DimmingEngine.Hardware
+                    ? "⚡ Modo: Hardware GPU (Inmune a scroll y vídeos)"
+                    : "🪟 Modo: Capa Overlay (Ventana semitransparente)";
+                btnToggleEngine.BackColor = newEngine == DimmingEngine.Hardware ? Color.FromArgb(12, 74, 110) : CardBorder;
+            };
+
             _chkStartup = new CheckBox
             {
                 Text = "Iniciar automáticamente con Windows",
-                Location = new Point(14, 12),
+                Location = new Point(14, 52),
                 Size = new Size(390, 22),
                 ForeColor = TextPrimary,
                 Font = new Font("Segoe UI", 9F),
@@ -332,7 +360,7 @@ namespace ScreenDimmer.Forms
             _chkStartMinimized = new CheckBox
             {
                 Text = "Iniciar minimizado en la bandeja del sistema",
-                Location = new Point(14, 38),
+                Location = new Point(14, 78),
                 Size = new Size(390, 22),
                 ForeColor = TextPrimary,
                 Font = new Font("Segoe UI", 9F),
@@ -350,13 +378,13 @@ namespace ScreenDimmer.Forms
                 Text = "ATAJOS DE TECLADO GLOBALES",
                 Font = new Font("Segoe UI", 8F, FontStyle.Bold),
                 ForeColor = TextMuted,
-                Location = new Point(14, 70),
+                Location = new Point(14, 110),
                 AutoSize = true
             };
 
             Panel pnlHotkeys = new Panel
             {
-                Location = new Point(14, 90),
+                Location = new Point(14, 130),
                 Size = new Size(392, 80),
                 BackColor = Color.FromArgb(28, 28, 31)
             };
@@ -375,6 +403,7 @@ namespace ScreenDimmer.Forms
 
             pnlHotkeys.Controls.AddRange(new Control[] { lblHk1, lblHk1Desc, lblHk2, lblHk2Desc, lblHk3, lblHk3Desc, lblHk4, lblHk4Desc });
 
+            cardSettings.Controls.Add(btnToggleEngine);
             cardSettings.Controls.Add(_chkStartup);
             cardSettings.Controls.Add(_chkStartMinimized);
             cardSettings.Controls.Add(lblHotkeysTitle);
@@ -386,7 +415,7 @@ namespace ScreenDimmer.Forms
                 Text = "Al cerrar esta ventana, ScreenDimmer continuará activo en la bandeja del sistema.",
                 Font = new Font("Segoe UI", 7.8F),
                 ForeColor = TextMuted,
-                Location = new Point(20, 568),
+                Location = new Point(20, 615),
                 Size = new Size(420, 32),
                 TextAlign = ContentAlignment.TopCenter
             };

@@ -4,35 +4,61 @@ using ScreenDimmer.Models;
 namespace ScreenDimmer.Core
 {
     /// <summary>
-    /// Controlador central de nivel y estado de atenuación.
-    /// Coordina la actualización del ScreenOverlay y notifica los cambios a la interfaz y servicios.
+    /// Controlador central de nivel, estado y motor de atenuación.
+    /// Soporta dos motores:
+    /// 1. Hardware Gamma LUT: actúa en la GPU, 100% inmune a MPO, scroll de Chrome/Edge, vídeos y modales.
+    /// 2. Capa Overlay: ventana borderless semitransparente Win32 (WS_EX_LAYERED).
     /// </summary>
-    public class BrightnessController
+    public class BrightnessController : IDisposable
     {
         private readonly ScreenOverlay _overlay;
+        private readonly GammaController _gammaController;
         private int _dimmingLevel;
         private bool _isEnabled;
+        private DimmingEngine _engine;
 
         public const int MinDimming = 0;
         public const int MaxDimming = 85;
 
         public int DimmingLevel => _dimmingLevel;
         public bool IsEnabled => _isEnabled;
+        public DimmingEngine Engine => _engine;
 
-        /// <summary>
-        /// Se dispara cuando el nivel o el estado de activación cambia.
-        /// Parámetros: (int nuevoNivel, bool estaHabilitado)
-        /// </summary>
         public event Action<int, bool>? DimmingChanged;
+        public event Action<DimmingEngine>? EngineChanged;
 
-        public BrightnessController(ScreenOverlay overlay, int initialDimming = 30, bool initialEnabled = true)
+        public BrightnessController(
+            ScreenOverlay overlay,
+            GammaController gammaController,
+            int initialDimming = 30,
+            bool initialEnabled = true,
+            DimmingEngine initialEngine = DimmingEngine.Hardware)
         {
             _overlay = overlay ?? throw new ArgumentNullException(nameof(overlay));
+            _gammaController = gammaController ?? throw new ArgumentNullException(nameof(gammaController));
             _dimmingLevel = Math.Clamp(initialDimming, MinDimming, MaxDimming);
             _isEnabled = initialEnabled;
+            _engine = initialEngine;
 
-            // Sincronizar overlay inicial
-            _overlay.SetDimming(_dimmingLevel, _isEnabled);
+            ApplyCurrent();
+        }
+
+        public void SetEngine(DimmingEngine newEngine)
+        {
+            if (_engine == newEngine) return;
+            _engine = newEngine;
+
+            if (_engine == DimmingEngine.Hardware)
+            {
+                _overlay.SetDimming(0, false);
+            }
+            else
+            {
+                _gammaController.Restore();
+            }
+
+            ApplyCurrent();
+            EngineChanged?.Invoke(_engine);
         }
 
         public void SetDimming(int percentage)
@@ -46,7 +72,7 @@ namespace ScreenDimmer.Core
                 _isEnabled = true;
             }
 
-            _overlay.SetDimming(_dimmingLevel, _isEnabled);
+            ApplyCurrent();
             DimmingChanged?.Invoke(_dimmingLevel, _isEnabled);
         }
 
@@ -55,8 +81,22 @@ namespace ScreenDimmer.Core
             if (_isEnabled == enabled) return;
 
             _isEnabled = enabled;
-            _overlay.SetDimming(_dimmingLevel, _isEnabled);
+            ApplyCurrent();
             DimmingChanged?.Invoke(_dimmingLevel, _isEnabled);
+        }
+
+        private void ApplyCurrent()
+        {
+            if (_engine == DimmingEngine.Hardware && _gammaController.IsSupported)
+            {
+                _overlay.SetDimming(0, false);
+                _gammaController.SetDimming(_dimmingLevel, _isEnabled);
+            }
+            else
+            {
+                _gammaController.Restore();
+                _overlay.SetDimming(_dimmingLevel, _isEnabled);
+            }
         }
 
         public void Toggle()
@@ -83,6 +123,7 @@ namespace ScreenDimmer.Core
             _dimmingLevel = 0;
             _isEnabled = false;
             _overlay.SetDimming(0, false);
+            _gammaController.Restore();
             DimmingChanged?.Invoke(0, false);
         }
 
@@ -91,6 +132,12 @@ namespace ScreenDimmer.Core
             if (profile == null) return;
             _isEnabled = true;
             SetDimming(profile.DimmingPercentage);
+        }
+
+        public void Dispose()
+        {
+            Reset();
+            _gammaController.Dispose();
         }
     }
 }

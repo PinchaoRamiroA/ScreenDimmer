@@ -8,7 +8,8 @@ namespace ScreenDimmer.Core
 {
     /// <summary>
     /// Ventana de superposición borderless y click-through para atenuación de pantalla.
-    /// Garantiza oscurecimiento visual efectivo sin parpadeos, rebotes de brillo ni interferencia con el ratón.
+    /// Garantiza oscurecimiento visual efectivo y continuo sobre ventanas normales, diálogos modales,
+    /// menús emergentes y reproducciones de vídeo en Windows 11 sin parpadeos ni rebotes.
     /// </summary>
     public sealed class ScreenOverlay : Form
     {
@@ -18,8 +19,19 @@ namespace ScreenDimmer.Core
         private Rectangle _lastBounds = Rectangle.Empty;
         private bool _isDisposed = false;
 
+        private IntPtr _winEventHook = IntPtr.Zero;
+        private readonly NativeMethods.WinEventDelegate _winEventProc;
+        private readonly System.Windows.Forms.Timer _zOrderTimer;
+
         public bool IsDimmingActive => _isDimmingActive;
         public int DimmingPercentage => _dimmingPercentage;
+
+        /// <summary>
+        /// Handle del formulario principal de controles (MainForm).
+        /// Permite asegurar que los controles de la aplicación siempre se mantengan por encima
+        /// del overlay para que no queden oscurecidos.
+        /// </summary>
+        public IntPtr MainFormHandle { get; set; } = IntPtr.Zero;
 
         public ScreenOverlay()
         {
@@ -35,6 +47,23 @@ namespace ScreenDimmer.Core
                      ControlStyles.Opaque, true);
 
             UpdateBoundsToScreen(force: true);
+
+            // Hook del sistema para detectar activación de ventanas y diálogos modales en tiempo real
+            _winEventProc = OnForegroundChanged;
+            _winEventHook = NativeMethods.SetWinEventHook(
+                NativeMethods.EVENT_SYSTEM_FOREGROUND,
+                NativeMethods.EVENT_SYSTEM_FOREGROUND,
+                IntPtr.Zero,
+                _winEventProc,
+                0,
+                0,
+                NativeMethods.WINEVENT_OUTOFCONTEXT
+            );
+
+            // Temporizador de guardia (watchdog) cada 200 ms:
+            // Impide que aceleradores de vídeo (DirectFlip / MPO de Chrome/Edge) o scrolls eludan la capa
+            _zOrderTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            _zOrderTimer.Tick += (s, e) => EnforceZOrder();
 
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         }
@@ -69,12 +98,7 @@ namespace ScreenDimmer.Core
             if (_isDimmingActive && _currentAlpha > 0)
             {
                 NativeMethods.SetLayeredWindowAttributes(Handle, 0, _currentAlpha, NativeMethods.LWA_ALPHA);
-                NativeMethods.SetWindowPos(
-                    Handle,
-                    NativeMethods.HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE
-                );
+                EnforceZOrder();
             }
         }
 
@@ -116,6 +140,41 @@ namespace ScreenDimmer.Core
             e.Graphics.Clear(Color.Black);
         }
 
+        private void OnForegroundChanged(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+        {
+            if (_isDisposed || !_isDimmingActive || !IsHandleCreated) return;
+            EnforceZOrder();
+        }
+
+        /// <summary>
+        /// Reafirma la posición de ScreenOverlay en la cúspide del Z-order de ventanas TopMost,
+        /// asegurando que los diálogos modales recién abiertos queden atenuados y que la reproducción
+        /// de vídeo o scroll en navegadores no eludan la capa de brillo.
+        /// </summary>
+        public void EnforceZOrder()
+        {
+            if (_isDisposed || !_isDimmingActive || !IsHandleCreated) return;
+
+            // 1. Elevar ScreenOverlay sobre cualquier diálogo modal o ventana nueva
+            NativeMethods.SetWindowPos(
+                Handle,
+                NativeMethods.HWND_TOPMOST,
+                0, 0, 0, 0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE
+            );
+
+            // 2. Si MainForm está abierto, asegurar que se mantenga por encima de ScreenOverlay para mantenerse visible
+            if (MainFormHandle != IntPtr.Zero && NativeMethods.IsWindowVisible(MainFormHandle))
+            {
+                NativeMethods.SetWindowPos(
+                    MainFormHandle,
+                    NativeMethods.HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE
+                );
+            }
+        }
+
         /// <summary>
         /// Actualiza las dimensiones del overlay si la resolución ha cambiado físicamente.
         /// </summary>
@@ -123,6 +182,7 @@ namespace ScreenDimmer.Core
         {
             if (_isDisposed) return;
 
+            // Utilizar el área virtual completa para abarcar todas las pantallas conectadas sin fisuras
             Rectangle screenBounds = SystemInformation.VirtualScreen;
             if (screenBounds.IsEmpty)
             {
@@ -168,6 +228,7 @@ namespace ScreenDimmer.Core
 
             if (!_isDimmingActive)
             {
+                _zOrderTimer.Stop();
                 if (IsHandleCreated)
                 {
                     NativeMethods.SetLayeredWindowAttributes(Handle, 0, 0, NativeMethods.LWA_ALPHA);
@@ -189,12 +250,13 @@ namespace ScreenDimmer.Core
             if (!Visible)
             {
                 Show();
-                NativeMethods.SetWindowPos(
-                    Handle,
-                    NativeMethods.HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE
-                );
+            }
+
+            EnforceZOrder();
+
+            if (!_zOrderTimer.Enabled)
+            {
+                _zOrderTimer.Start();
             }
         }
 
@@ -226,7 +288,15 @@ namespace ScreenDimmer.Core
             {
                 if (disposing)
                 {
+                    _zOrderTimer.Stop();
+                    _zOrderTimer.Dispose();
                     SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+                }
+
+                if (_winEventHook != IntPtr.Zero)
+                {
+                    NativeMethods.UnhookWinEvent(_winEventHook);
+                    _winEventHook = IntPtr.Zero;
                 }
 
                 if (IsHandleCreated)

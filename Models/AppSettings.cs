@@ -2,12 +2,19 @@ using System;
 
 namespace ScreenDimmer.Models
 {
+    public enum DimmingEngine
+    {
+        Hardware = 0,
+        Overlay = 1
+    }
+
     /// <summary>
     /// Estructura de configuración persistente de la aplicación.
     /// Se almacena en formato JSON en el directorio de datos de usuario de Windows.
     /// </summary>
     public class AppSettings
     {
+        public DimmingEngine Engine { get; set; } = DimmingEngine.Hardware;
         public int DimmingPercentage { get; set; } = 30;
         public bool IsEnabled { get; set; } = true;
         public string SelectedProfile { get; set; } = "Tarde";

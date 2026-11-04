@@ -20,7 +20,7 @@ namespace ScreenDimmer.Forms
             // Configuración general del formulario
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(460, 620);
+            this.ClientSize = new System.Drawing.Size(460, 665);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
             this.Name = "MainForm";

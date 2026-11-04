@@ -117,7 +117,8 @@ namespace ScreenDimmer.Tests
         {
             Console.WriteLine("\n--- Probando BrightnessController ---");
             using var overlay = new ScreenOverlay();
-            var controller = new BrightnessController(overlay, 30, true);
+            using var gamma = new GammaController();
+            var controller = new BrightnessController(overlay, gamma, 30, true, DimmingEngine.Overlay);
 
             Assert(controller.DimmingLevel == 30, "Nivel inicial debe ser 30%");
             Assert(controller.IsEnabled == true, "Estado inicial debe ser activo");

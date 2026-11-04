@@ -50,6 +50,21 @@ namespace ScreenDimmer.Interop
 
         public const int WM_HOTKEY = 0x0312;
 
+        public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+        public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+
+        public delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+        [DllImport("user32.dll")]
+        public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
         public const uint MOD_NONE = 0x0000;
         public const uint MOD_ALT = 0x0001;
         public const uint MOD_CONTROL = 0x0002;
@@ -111,6 +126,29 @@ namespace ScreenDimmer.Interop
 
         [DllImport("gdi32.dll")]
         public static extern IntPtr GetStockObject(int fnObject);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        public struct RAMP
+        {
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public ushort[] Red;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public ushort[] Green;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public ushort[] Blue;
+        }
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        public static extern bool GetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        public static extern bool SetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
 
         [DllImport("user32.dll")]
         public static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
