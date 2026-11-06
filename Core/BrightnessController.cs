@@ -64,7 +64,8 @@ namespace ScreenDimmer.Core
         public void SetDimming(int percentage)
         {
             int clamped = Math.Clamp(percentage, MinDimming, MaxDimming);
-            if (_dimmingLevel == clamped && _isEnabled) return;
+            bool changed = _dimmingLevel != clamped;
+            bool wasEnabled = _isEnabled;
 
             _dimmingLevel = clamped;
             if (_dimmingLevel > 0 && !_isEnabled)
@@ -72,31 +73,60 @@ namespace ScreenDimmer.Core
                 _isEnabled = true;
             }
 
+            // Se aplica siempre, incluso cuando el nivel no cambió: Windows puede haber
+            // restablecido la rampa gamma (apagado de pantalla, suspensión, cambio de
+            // resolución) y el estado interno seguiría diciendo "80%" sin efecto real.
             ApplyCurrent();
-            DimmingChanged?.Invoke(_dimmingLevel, _isEnabled);
+
+            if (changed || wasEnabled != _isEnabled)
+            {
+                DimmingChanged?.Invoke(_dimmingLevel, _isEnabled);
+            }
         }
 
         public void SetEnabled(bool enabled)
         {
-            if (_isEnabled == enabled) return;
-
+            bool changed = _isEnabled != enabled;
             _isEnabled = enabled;
+
             ApplyCurrent();
-            DimmingChanged?.Invoke(_dimmingLevel, _isEnabled);
+
+            if (changed)
+            {
+                DimmingChanged?.Invoke(_dimmingLevel, _isEnabled);
+            }
+        }
+
+        /// <summary>
+        /// Reaplica la atenuación si el hardware perdió la rampa gamma.
+        /// Pensado para un temporizador de vigilancia en la interfaz.
+        /// </summary>
+        public void ReapplyIfNeeded()
+        {
+            if (_engine != DimmingEngine.Hardware) return;
+            if (!_isEnabled || _dimmingLevel <= 0) return;
+
+            if (_gammaController.NeedsReapply(_dimmingLevel))
+            {
+                ApplyCurrent();
+            }
         }
 
         private void ApplyCurrent()
         {
             if (_engine == DimmingEngine.Hardware && _gammaController.IsSupported)
             {
-                _overlay.SetDimming(0, false);
-                _gammaController.SetDimming(_dimmingLevel, _isEnabled);
+                if (_gammaController.SetDimming(_dimmingLevel, _isEnabled))
+                {
+                    _overlay.SetDimming(0, false);
+                    return;
+                }
             }
-            else
-            {
-                _gammaController.Restore();
-                _overlay.SetDimming(_dimmingLevel, _isEnabled);
-            }
+
+            // Si el hardware no está disponible o rechazó la escritura, se usa el overlay
+            // para que el usuario nunca se quede sin atenuación.
+            _gammaController.Restore();
+            _overlay.SetDimming(_dimmingLevel, _isEnabled);
         }
 
         public void Toggle()

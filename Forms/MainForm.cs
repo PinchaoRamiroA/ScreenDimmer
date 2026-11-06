@@ -26,6 +26,7 @@ namespace ScreenDimmer.Forms
 
         private bool _isExiting = false;
         private bool _isInternalUpdating = false;
+        private readonly System.Windows.Forms.Timer _reapplyTimer;
 
         // Controles de la interfaz gráfica
         private Label _lblTitle = null!;
@@ -73,6 +74,12 @@ namespace ScreenDimmer.Forms
             // Sincronizar eventos del controlador
             _controller.DimmingChanged += OnControllerDimmingChanged;
             _profileManager.ProfileChanged += OnProfileChanged;
+
+            // Windows restablece la rampa gamma al apagar/encender la pantalla, al cambiar
+            // la resolución o al reanudar la sesión. Este vigilante la reaplica si se perdió.
+            _reapplyTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            _reapplyTimer.Tick += (s, e) => _controller.ReapplyIfNeeded();
+            _reapplyTimer.Start();
 
             // Asegurar que la ventana principal siempre flote por encima del overlay
             TopMost = true;
@@ -579,6 +586,8 @@ namespace ScreenDimmer.Forms
 
         public void ExitApplication()
         {
+            _reapplyTimer.Stop();
+            _reapplyTimer.Dispose();
             _isExiting = true;
             Close();
             Application.Exit();
