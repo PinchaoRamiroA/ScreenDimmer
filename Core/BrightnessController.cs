@@ -106,7 +106,7 @@ namespace ScreenDimmer.Core
             if (_engine != DimmingEngine.Hardware) return;
             if (!_isEnabled || _dimmingLevel <= 0) return;
 
-            if (_gammaController.NeedsReapply(_dimmingLevel))
+            if (_gammaController.NeedsReapply())
             {
                 ApplyCurrent();
             }
@@ -114,17 +114,25 @@ namespace ScreenDimmer.Core
 
         private void ApplyCurrent()
         {
-            if (_engine == DimmingEngine.Hardware && _gammaController.IsSupported)
+            if (_engine == DimmingEngine.Hardware)
             {
+                // El controlador gamma ya se autorregula: si el driver rechaza una curva,
+                // aplica la más oscura que sí acepta. Mientras el hardware responda NO se
+                // usa el overlay, porque es lo que producía brillos distintos por pestaña
+                // o aplicación (MPO/DirectFlip se saltan la capa semitransparente).
                 if (_gammaController.SetDimming(_dimmingLevel, _isEnabled))
                 {
                     _overlay.SetDimming(0, false);
                     return;
                 }
+
+                // Solo si el hardware no admite gamma en absoluto se recurre al overlay,
+                // para que el usuario nunca se quede sin atenuación.
+                _gammaController.Restore();
+                _overlay.SetDimming(_dimmingLevel, _isEnabled);
+                return;
             }
 
-            // Si el hardware no está disponible o rechazó la escritura, se usa el overlay
-            // para que el usuario nunca se quede sin atenuación.
             _gammaController.Restore();
             _overlay.SetDimming(_dimmingLevel, _isEnabled);
         }

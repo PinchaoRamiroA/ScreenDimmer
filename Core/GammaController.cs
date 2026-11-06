@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.InteropServices;
 using ScreenDimmer.Interop;
 
 namespace ScreenDimmer.Core
@@ -9,18 +8,35 @@ namespace ScreenDimmer.Core
     /// Este mecanismo actúa a nivel de la salida física del chip gráfico hacia el monitor, haciéndolo 100% inmune
     /// a Multi-Plane Overlays (MPO), DirectFlip, scrolls en navegadores, reproducciones de vídeo y diálogos modales.
     ///
-    /// Windows restablece la rampa gamma cuando la pantalla se apaga y se vuelve a encender, al cambiar la
-    /// resolución o al reanudar la sesión. Por eso este controlador conserva el nivel aplicado y expone
-    /// <see cref="NeedsReapply"/> para que la aplicación pueda restaurar la atenuación cuando se pierda.
+    /// Windows valida las rampas gamma antes de aplicarlas: rechaza las que dejan el pico luminoso por debajo de
+    /// la mitad del máximo y limita cuánto se pueden oscurecer los medios tonos. Por eso, pasado cierto nivel, no
+    /// se puede seguir escalando la rampa linealmente (la escritura falla y antes provocaba que la aplicación
+    /// cayera a la capa overlay, causando brillos distintos por pestaña o aplicación). Aquí se conserva el pico
+    /// permitido y se oscurece la curva de medios tonos; si el driver aún así rechaza la rampa, se calibra en
+    /// tiempo de ejecución el punto más oscuro que sí acepta.
+    ///
+    /// Windows también restablece la rampa cuando la pantalla se apaga y se vuelve a encender, al cambiar la
+    /// resolución o al reanudar la sesión. Por eso el controlador conserva la rampa aplicada y expone
+    /// <see cref="NeedsReapply"/> para que la aplicación pueda restaurarla cuando se pierda.
     /// </summary>
     public sealed class GammaController : IDisposable
     {
         private const int MaxDimming = 85;
 
+        /// <summary>Pico mínimo (de 65535) que Windows acepta en una rampa gamma.</summary>
+        private const double MinimumPeak = 32768.0;
+
+        /// <summary>Diferencia tolerada entre la rampa aplicada y la actual antes de considerarla perdida.</summary>
+        private const int RampTolerance = 400;
+
         private NativeMethods.RAMP _originalRamp;
         private bool _hasOriginalRamp = false;
         private IntPtr _screenDc = IntPtr.Zero;
         private bool _isDisposed = false;
+
+        private NativeMethods.RAMP? _appliedRamp;
+        private int _darkestAccepted = MaxDimming;
+        private bool _hardwareRejected;
 
         public bool IsSupported { get; private set; }
 
@@ -79,7 +95,8 @@ namespace ScreenDimmer.Core
         }
 
         /// <summary>
-        /// Aplica atenuación escalando los canales RGB de la tabla de color del hardware.
+        /// Aplica atenuación a la tabla de color del hardware.
+        /// Devuelve false solo cuando el hardware no admite ninguna escritura de gamma.
         /// </summary>
         /// <param name="percentage">Porcentaje de atenuación (0 a 85%).</param>
         /// <param name="active">Indica si la atenuación está habilitada.</param>
@@ -87,27 +104,58 @@ namespace ScreenDimmer.Core
         {
             if (_isDisposed) return false;
 
-            int clamped = Math.Clamp(percentage, 0, MaxDimming);
+            int requested = Math.Clamp(percentage, 0, MaxDimming);
 
-            if (!active || clamped <= 0)
+            if (!active || requested <= 0)
             {
                 return Restore();
             }
 
+            // Un equipo que rechaza incluso la atenuación mínima no se reintenta en cada
+            // cambio: se marca como no disponible hasta que cambie el DC (nuevo monitor,
+            // reanudación de sesión, etc.).
+            if (_hardwareRejected) return false;
+
             if (!TryInitialize()) return false;
 
-            var dimmedRamp = BuildDimmedRamp(clamped);
-            if (NativeMethods.SetDeviceGammaRamp(_screenDc, ref dimmedRamp))
-            {
-                return true;
-            }
+            int target = Math.Min(requested, _darkestAccepted);
 
-            // El DC puede haber quedado inválido tras apagar/encender la pantalla.
-            // Se refresca una vez y se reintenta antes de rendirse.
+            if (TryWrite(target)) return true;
+
+            // El DC pudo quedar inválido tras apagar/encender la pantalla.
             RefreshDeviceContext();
             if (!TryInitialize()) return false;
+            if (TryWrite(target)) return true;
 
-            return NativeMethods.SetDeviceGammaRamp(_screenDc, ref dimmedRamp);
+            // El driver rechazó la curva: se busca por bisección el nivel más oscuro
+            // que sí acepta y se memoriza para no repetir la calibración en cada cambio.
+            int low = 0;
+            int high = target - 1;
+
+            while (low < high)
+            {
+                int mid = (low + high + 1) / 2;
+                if (TryWrite(mid))
+                {
+                    low = mid;
+                }
+                else
+                {
+                    high = mid - 1;
+                }
+            }
+
+            _darkestAccepted = low > 0 ? low : MaxDimming;
+
+            if (low <= 0)
+            {
+                // Ni siquiera una atenuación mínima es aceptada: el hardware no sirve.
+                IsSupported = false;
+                _hardwareRejected = true;
+                return false;
+            }
+
+            return TryWrite(low);
         }
 
         /// <summary>
@@ -126,30 +174,36 @@ namespace ScreenDimmer.Core
 
             if (NativeMethods.SetDeviceGammaRamp(_screenDc, ref _originalRamp))
             {
+                _appliedRamp = null;
                 return true;
             }
 
             RefreshDeviceContext();
             if (_screenDc == IntPtr.Zero) return false;
 
-            return NativeMethods.SetDeviceGammaRamp(_screenDc, ref _originalRamp);
+            if (NativeMethods.SetDeviceGammaRamp(_screenDc, ref _originalRamp))
+            {
+                _appliedRamp = null;
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>
-        /// Comprueba si la atenuación solicitada sigue realmente activa en la GPU.
-        /// Devuelve true cuando Windows restableció la rampa (por ejemplo, al encender
-        /// la pantalla) y es necesario volver a aplicarla.
+        /// Comprueba si la rampa realmente aplicada sigue activa en la GPU.
+        /// Devuelve true cuando Windows la restableció (por ejemplo, al encender la
+        /// pantalla o al recargar el perfil de color) y hay que volver a aplicarla.
         /// </summary>
-        public bool NeedsReapply(int percentage)
+        public bool NeedsReapply()
         {
             if (_isDisposed) return false;
-
             if (!TryInitialize()) return false;
-            if (percentage <= 0) return false;
             if (!_hasOriginalRamp) return false;
+            if (_appliedRamp is null) return true;
 
-            // Se consulta con un DC nuevo para no depender de un DC que pueda haber
-            // quedado inválido tras apagar/encender la pantalla.
+            // Se consulta con un DC nuevo para no depender de un DC invalidado por
+            // el apagado/encendido de la pantalla.
             IntPtr probeDc = NativeMethods.GetDC(IntPtr.Zero);
             if (probeDc == IntPtr.Zero) return true;
 
@@ -161,15 +215,7 @@ namespace ScreenDimmer.Core
                     return true;
                 }
 
-                var expectedRamp = BuildDimmedRamp(percentage);
-
-                // Si los tres canales volvieron a estar más cerca del valor original que del
-                // atenuado, la rampa fue restablecida externamente. Comparar los tres canales
-                // evita reaplicar por cambios de temperatura de color (Night Light) u otras
-                // aplicaciones que oscurezcan aún más la pantalla.
-                return ChannelLost(currentRamp.Red, expectedRamp.Red, _originalRamp.Red)
-                    && ChannelLost(currentRamp.Green, expectedRamp.Green, _originalRamp.Green)
-                    && ChannelLost(currentRamp.Blue, expectedRamp.Blue, _originalRamp.Blue);
+                return RampDiffers(currentRamp, _appliedRamp.Value);
             }
             finally
             {
@@ -177,28 +223,51 @@ namespace ScreenDimmer.Core
             }
         }
 
-        private static bool ChannelLost(ushort[] current, ushort[] expected, ushort[] original)
+        private static bool RampDiffers(NativeMethods.RAMP current, NativeMethods.RAMP applied)
         {
-            // Se comprueban dos puntos representativos de la curva. Se exige que la rampa
-            // actual esté al menos al 80% del camino de vuelta hacia la original: así se
-            // detecta un reinicio real sin reaplicar por otros atenuadores o Night Light.
-            foreach (int i in new[] { 128, 255 })
+            for (int i = 0; i < 256; i += 8)
             {
-                int threshold = expected[i] + (int)((original[i] - expected[i]) * 0.8);
-                if (current[i] <= threshold)
-                {
-                    return false;
-                }
+                if (Math.Abs(current.Red[i] - applied.Red[i]) > RampTolerance) return true;
+                if (Math.Abs(current.Green[i] - applied.Green[i]) > RampTolerance) return true;
+                if (Math.Abs(current.Blue[i] - applied.Blue[i]) > RampTolerance) return true;
             }
 
+            return false;
+        }
+
+        private bool TryWrite(int percentage)
+        {
+            if (_screenDc == IntPtr.Zero) return false;
+
+            var ramp = BuildDimmedRamp(percentage);
+            if (!NativeMethods.SetDeviceGammaRamp(_screenDc, ref ramp))
+            {
+                return false;
+            }
+
+            _appliedRamp = ramp;
             return true;
         }
 
+        /// <summary>
+        /// Construye la rampa atenuada. Hasta el 50 % de atenuación se escala linealmente
+        /// (comportamiento clásico y exacto). Más allá, Windows rechazaría el pico bajo,
+        /// así que se mantiene el pico mínimo permitido y se oscurecen los medios tonos con
+        /// una curva de potencia que conserva la misma cantidad de luz que el escalado lineal.
+        /// </summary>
         private NativeMethods.RAMP BuildDimmedRamp(int percentage)
         {
             int clamped = Math.Clamp(percentage, 0, MaxDimming);
-            // Factor de brillo restante: 0% = 1.0 (brillo completo), 85% = 0.15
-            double brightnessFactor = 1.0 - (clamped / 100.0);
+            double remaining = 1.0 - (clamped / 100.0);
+
+            double maxOriginal = MaxChannelValue(_originalRamp);
+            if (maxOriginal <= 0) maxOriginal = 65535.0;
+
+            double peak = Math.Max(maxOriginal * remaining, Math.Min(maxOriginal, MinimumPeak));
+            double meanTarget = maxOriginal * 0.5 * remaining;
+
+            double exponent = meanTarget > 0 ? (peak / meanTarget) - 1.0 : 1.0;
+            if (exponent < 1.0) exponent = 1.0;
 
             var dimmedRamp = new NativeMethods.RAMP
             {
@@ -209,17 +278,33 @@ namespace ScreenDimmer.Core
 
             for (int i = 0; i < 256; i++)
             {
-                dimmedRamp.Red[i] = ScaleChannel(_originalRamp.Red[i], brightnessFactor);
-                dimmedRamp.Green[i] = ScaleChannel(_originalRamp.Green[i], brightnessFactor);
-                dimmedRamp.Blue[i] = ScaleChannel(_originalRamp.Blue[i], brightnessFactor);
+                dimmedRamp.Red[i] = ShapeChannel(_originalRamp.Red[i], maxOriginal, peak, exponent);
+                dimmedRamp.Green[i] = ShapeChannel(_originalRamp.Green[i], maxOriginal, peak, exponent);
+                dimmedRamp.Blue[i] = ShapeChannel(_originalRamp.Blue[i], maxOriginal, peak, exponent);
             }
 
             return dimmedRamp;
         }
 
-        private static ushort ScaleChannel(ushort value, double factor)
+        private static ushort ShapeChannel(ushort value, double maxOriginal, double peak, double exponent)
         {
-            return (ushort)Math.Clamp(Math.Round(value * factor), 0, 65535);
+            if (value == 0) return 0;
+
+            double normalized = value / maxOriginal;
+            double shaped = peak * Math.Pow(normalized, exponent);
+            return (ushort)Math.Clamp(Math.Round(shaped), 0, 65535);
+        }
+
+        private static double MaxChannelValue(NativeMethods.RAMP ramp)
+        {
+            double max = 0;
+            for (int i = 0; i < 256; i++)
+            {
+                if (ramp.Red[i] > max) max = ramp.Red[i];
+                if (ramp.Green[i] > max) max = ramp.Green[i];
+                if (ramp.Blue[i] > max) max = ramp.Blue[i];
+            }
+            return max;
         }
 
         private void RefreshDeviceContext()
@@ -231,6 +316,10 @@ namespace ScreenDimmer.Core
             }
 
             _screenDc = NativeMethods.GetDC(IntPtr.Zero);
+
+            // La calibración depende del DC y del monitor activo: se vuelve a calcular.
+            _darkestAccepted = MaxDimming;
+            _hardwareRejected = false;
         }
 
         public void Dispose()
